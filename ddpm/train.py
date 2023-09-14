@@ -1,9 +1,11 @@
 import torch
 import tqdm
 import random
+import argparse
+import numpy as np
 from tqdm import tqdm
 from torch import nn
-import numpy as np
+
 from ddpm import utils
 from ddpm.ddpm import DDPM
 from ddpm.unet import UNet
@@ -25,27 +27,26 @@ def extreme_shifted_noise(n_steps, n):
         return torch.randint(int(n_steps / 10) * 9, n_steps, (n,))
     return torch.randint(0, n_steps, (n,))
 
-def u_dist_noise(n_steps, n):
+def u_dist_abs_noise(n_steps, n):
     sampling_probs = []
-    start = n_steps * 3 / 4
     for i in range(n_steps):
-        if i < n_steps / 2:
-          sampling_probs.append(start - i)
-        else:
-          sampling_probs.append(start - int(n_steps / 2) + i)
+        sampling_probs.append(abs(i - (n_steps / 2)) + + n_steps / 8)
 
     sampling_probs = torch.tensor([i / sum(sampling_probs) for i in sampling_probs])
     return torch.multinomial(sampling_probs, n, replacement=True)
 
-def u_dist_extreme_noise(n_steps, n):
+def u_dist_quadratic_noise(n_steps, n):
     sampling_probs = []
-    start = 3 * n_steps * 3 / 4
     for i in range(n_steps):
-        if i < n_steps / 2:
-          sampling_probs.append(start - (2 * i))
-        else:
-          sampling_probs.append(start + 2 * (i - (n_steps / 2)))
+        sampling_probs.append((i - (n_steps / 2)) ** 2 + (n_steps / 8) ** 2)
 
+    sampling_probs = torch.tensor([i / sum(sampling_probs) for i in sampling_probs])
+    return torch.multinomial(sampling_probs, n, replacement=True)
+
+def u_dist_quartic_noise(n_steps, n):
+    sampling_probs = []
+    for i in range(n_steps):
+        sampling_probs.append((i - (n_steps / 2)) ** 4 + (n_steps / 8) ** 4)
     sampling_probs = torch.tensor([i / sum(sampling_probs) for i in sampling_probs])
     return torch.multinomial(sampling_probs, n, replacement=True)
 
@@ -99,10 +100,14 @@ def training_loop(ddpm, loader, n_epochs, optim, device, display=False, store_pa
     plt.bar(np.arange(len(epoch_losses)), epoch_losses)
     plt.xlabel('Epochs')
     plt.ylabel('Loss')
+    plt.title(f'Loss per Epoch Noise Dist: {noise_dist_label_str.title()} ')
     plt.savefig(f'loss_{noise_dist_label_str}.png', format='png')
 
-
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--noise_dist', type=str, default='uniform')
+    args = parser.parse_args()
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     n_steps, min_beta, max_beta = 1000, 10 ** -4, 0.02  # Originally used by the authors
     no_train = False
@@ -110,8 +115,15 @@ if __name__ == '__main__':
     n_epochs = 20
     lr = 0.001
 
-    noise_sampling_dist = u_dist_extreme_noise
-    noise_sampling_dist_name = 'u_dist_extreme'
+    noise_dist_functions = {
+        'uniform': uniform_noise,
+        'extreme_shifted': extreme_shifted_noise,
+        'u_dist_abs': u_dist_abs_noise,
+        'u_dist_quadratic': u_dist_quadratic_noise,
+        'u_dist_quartic': u_dist_quartic_noise
+    }
+    noise_sampling_dist = noise_dist_functions[args.noise_dist]
+    noise_sampling_dist_name = args.noise_dist
     store_path = f"ddpm_model_mnist_{noise_sampling_dist_name}.pt"
 
     transform = Compose([

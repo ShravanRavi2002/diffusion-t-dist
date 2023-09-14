@@ -1,6 +1,7 @@
 import torch
 import einops
 import imageio
+import numpy as np
 import matplotlib.pyplot as plt
 
 def show_images(images, title=""):
