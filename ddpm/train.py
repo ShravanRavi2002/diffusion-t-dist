@@ -97,11 +97,91 @@ def training_loop(ddpm, loader, n_epochs, optim, device, display=False, store_pa
 
         print(log_string)
     
+    np.save(f'{noise_dist_label_str}_losses.npy', np.array(epoch_losses))
     plt.bar(np.arange(len(epoch_losses)), epoch_losses)
     plt.xlabel('Epochs')
     plt.ylabel('Loss')
     plt.title(f'Loss per Epoch Noise Dist: {noise_dist_label_str.title()} ')
     plt.savefig(f'loss_{noise_dist_label_str}.png', format='png')
+
+
+def training_loop_optim_challenges(ddpm, loader, n_epochs, optim, device, display=False, store_path="ddpm_model.pt", noise_dist=uniform_noise, noise_dist_label_str='uniform'):
+  mse = nn.MSELoss()
+  best_loss = float("inf")
+  n_steps = ddpm.n_steps
+
+  n_partitions = 10
+
+  epoch_losses = []
+  cos_similarity = nn.CosineSimilarity()
+  cos_similarities = []
+  for epoch in tqdm(range(n_epochs), desc=f"Training progress", colour="#00ff00"):
+      epoch_loss = 0.0
+      gradients = [[] for i in range(n_partitions)] 
+      for step, batch in enumerate(tqdm(loader, leave=False, desc=f"Epoch {epoch + 1}/{n_epochs}", colour="#005500")):
+          # Loading data
+          x0 = batch[0].to(device)
+          n = len(x0)
+
+          # Picking some noise for each of the images in the batch, a timestep and the respective alpha_bars
+          eta = torch.randn_like(x0).to(device)
+
+          index = random.randint(0, n_partitions - 1)
+          step_size = n_steps / n_partitions
+          start = int(step_size * index)
+          end   = int(step_size * (index + 1))
+          t = torch.randint(start, end, (n,)).to(device)
+ 
+          # Computing the noisy image based on x0 and the time-step (forward process)
+          noisy_imgs = ddpm(x0, t, eta)
+          noisy_imgs.requires_grad_(True)
+
+          # Getting model estimation of noise based on the images and the time-step
+          eta_theta = ddpm.backward(noisy_imgs, t.reshape(n, -1))
+
+          # Optimizing the MSE between the noise plugged and the predicted noise
+          loss = mse(eta_theta, eta)
+          optim.zero_grad()
+          loss.backward()
+          gradients[index].append(noisy_imgs.grad)
+          optim.step()
+          
+          # gradients[index].append(torch.autograd.grad(loss, list(ddpm.parameters())))
+          epoch_loss += loss.item() * len(x0) / len(loader.dataset)
+      
+      average_gradients = []
+      for i in range(n_partitions):
+          average_gradients.append(torch.mean(torch.cat(gradients[i], dim=0), dim=0))
+          
+      cos_sim_matrix = [[0] * n_partitions for i in range(n_partitions)]
+      for i in range(n_partitions):
+          for j in range(n_partitions):
+              cos_sim_matrix[i][j] = cos_similarity(average_gradients[i].view(1, -1), average_gradients[j].view(1, -1)).item()
+
+      cos_similarities.append(cos_sim_matrix)
+      # Display images generated at this epoch
+      if display:
+          show_images(generate_new_images(ddpm, device=device), f"Images generated at epoch {epoch + 1}")
+
+      log_string = f"Loss at epoch {epoch + 1}: {epoch_loss:.3f}"
+      epoch_losses.append(epoch_loss)
+
+      # Storing the model
+      if best_loss > epoch_loss:
+          best_loss = epoch_loss
+          torch.save(ddpm.state_dict(), store_path)
+          log_string += " --> Best model ever (stored)"
+
+      print(log_string)
+
+  np.save(f'optimization_challenge_losses.npy', np.array(epoch_losses))
+  plt.bar(np.arange(len(epoch_losses)), epoch_losses)
+  plt.xlabel('Epochs')
+  plt.ylabel('Loss')
+  plt.title(f'Loss per Epoch Noise Dist: Optimization Challenges')
+  plt.savefig(f'loss_optimization_challenges.png', format='png')
+  np.save('cos_similarity.npy', cos_similarities)
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -135,4 +215,4 @@ if __name__ == '__main__':
     loader = DataLoader(dataset, batch_size, shuffle=True)
 
     ddpm = DDPM(UNet(n_steps), n_steps=n_steps, min_beta=min_beta, max_beta=max_beta, device=device)
-    training_loop(ddpm, loader, n_epochs, optim=Adam(ddpm.parameters(), lr), device=device, store_path=store_path, noise_dist=noise_sampling_dist, noise_dist_label_str=noise_sampling_dist_name)
+    training_loop_optim_challenges(ddpm, loader, n_epochs, optim=Adam(ddpm.parameters(), lr), device=device, store_path=store_path, noise_dist=noise_sampling_dist, noise_dist_label_str=noise_sampling_dist_name)
